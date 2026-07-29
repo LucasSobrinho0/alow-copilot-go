@@ -1,0 +1,28 @@
+services:
+  app:
+    container_name: alow-copilot-go
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "${LOCAL_UID:-1001}:${LOCAL_GID:-1002}"
+    ports:
+      - "8080:8080"
+    environment:
+      API_KEY: ${API_KEY:?Defina API_KEY no arquivo .env}
+      HTTP_ADDRESS: ":8080"
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
+      ITEM_CHUNK_SIZE: ${ITEM_CHUNK_SIZE:-250}
+      MAX_CONCURRENT_EXTRACTIONS: ${MAX_CONCURRENT_EXTRACTIONS:-2}
+      GOMEMLIMIT: ${GO_MEMORY_LIMIT:-512MiB}
+      PDF_TO_TEXT: ${PDF_TO_TEXT:-false}
+    mem_limit: ${GO_CONTAINER_MEMORY_LIMIT:-768m}
+    cpus: ${GO_CONTAINER_CPUS:-2.0}
+    volumes:
+      - ./media:/media
+    networks:
+      - alow-copilot
+
+networks:
+  alow-copilot:
+    external: true
+    name: ${ALOW_DOCKER_NETWORK:-alow-copilot-docker_default}
