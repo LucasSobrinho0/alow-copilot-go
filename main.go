@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"alow-copilot-go/internal/config"
 	"alow-copilot-go/internal/diagnostic"
@@ -41,7 +42,16 @@ func main() {
 		slog.Default(),
 	)
 	log.Printf("servico de extracao iniciado em %s", address)
-	log.Fatal(http.ListenAndServe(address, server.Handler()))
+	httpServer := &http.Server{
+		Addr:              address,
+		Handler:           server.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       2 * time.Minute,
+		WriteTimeout:      6 * time.Minute,
+		IdleTimeout:       time.Minute,
+		MaxHeaderBytes:    1 << 20,
+	}
+	log.Fatal(httpServer.ListenAndServe())
 }
 
 func runPDFToTextDiagnostic() {

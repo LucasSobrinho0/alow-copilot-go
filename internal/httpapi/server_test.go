@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -91,6 +92,50 @@ func TestExtractRejectsRequestsAboveConcurrencyLimit(t *testing.T) {
 
 	close(release)
 	<-firstDone
+}
+
+func TestExtractRemovesMultipartTemporaryFiles(t *testing.T) {
+	temporaryDirectory := t.TempDir()
+	t.Setenv("TMPDIR", temporaryDirectory)
+	server := New(
+		"secret",
+		16<<20,
+		10,
+		1,
+		fakeExtractor{text: "VIVO\nContrato: 123\nCNPJ 12.345.678/0001-90\nCompetência: 07/2026"},
+		invoice.NewRegistry(invoice.NewTelecomParser("VIVO", "VIVO")),
+		slog.Default(),
+	)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "large-invoice.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("x"), 9<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/telecom/invoices/extract", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	entries, err := os.ReadDir(temporaryDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("arquivos multipart temporários não foram removidos: %v", entries)
+	}
 }
 
 func extractionRequest(t *testing.T) *http.Request {

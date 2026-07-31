@@ -70,6 +70,9 @@ func (s *Server) extract(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": "arquivo inválido ou acima do limite"})
 		return
 	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 	file, _, err := r.FormFile("file")
 	if err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": "o campo file é obrigatório"})

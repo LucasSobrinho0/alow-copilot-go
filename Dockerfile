@@ -3,6 +3,7 @@ FROM golang:1.25-alpine AS build
 WORKDIR /app
 
 COPY . .
+RUN go vet ./...
 RUN go test ./...
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /bin/alow-invoice-extractor .
 

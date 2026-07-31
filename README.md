@@ -27,6 +27,12 @@ com `Retry-After`, permitindo que a fila do Laravel tente novamente sem criar
 pressão adicional. `GOMEMLIMIT` e o limite de memória do container ficam em
 `512MiB` e `768m` por padrão.
 
+O servidor também limita leitura de cabeçalhos, upload, escrita da resposta e
+conexões ociosas. Arquivos temporários criados pelo parser multipart são
+removidos ao final de cada requisição. No Compose de desenvolvimento, a porta
+HTTP é publicada somente em `127.0.0.1`; a comunicação com o Laravel continua
+pela rede Docker interna.
+
 O `pdftotext` escreve em arquivo temporário. O parser Claro lê esse arquivo
 linha a linha e libera cada bloco de telefone em lotes de `ITEM_CHUNK_SIZE`;
 portanto, a memória não cresce proporcionalmente ao número total de linhas da
