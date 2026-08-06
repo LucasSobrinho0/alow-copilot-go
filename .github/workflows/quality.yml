@@ -1,0 +1,76 @@
+name: Go quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build ./...
+
+  publish-image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        name: Resolve image name
+        shell: bash
+        run: |
+          repository="${GITHUB_REPOSITORY,,}"
+          echo "name=ghcr.io/${repository}" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Request production deployment
+        if: vars.DEPLOY_REPOSITORY != ''
+        uses: actions/github-script@v7
+        env:
+          DEPLOY_REPOSITORY: ${{ vars.DEPLOY_REPOSITORY }}
+          IMAGE_REFERENCE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+        with:
+          github-token: ${{ secrets.DEPLOY_REPOSITORY_TOKEN }}
+          script: |
+            const [owner, repo] = process.env.DEPLOY_REPOSITORY.split('/')
+            if (!owner || !repo) throw new Error('DEPLOY_REPOSITORY deve usar o formato owner/repository')
+            await github.rest.repos.createDispatchEvent({
+              owner,
+              repo,
+              event_type: 'image_published',
+              client_payload: {
+                service: 'go',
+                image: process.env.IMAGE_REFERENCE,
+                sha: context.sha,
+              },
+            })
