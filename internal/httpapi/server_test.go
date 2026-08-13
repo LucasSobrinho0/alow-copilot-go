@@ -25,6 +25,20 @@ type memoryText struct{ *bytes.Reader }
 
 func (memoryText) Close() error { return nil }
 
+func TestDeployTestReturnsOnlyOKStatus(t *testing.T) {
+	server := New("secret", 1<<20, 1, 1, fakeExtractor{}, invoice.NewRegistry(), slog.Default())
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/deploy-test", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status: %d", response.Code)
+	}
+	if response.Body.String() != "{\"status\":\"ok\"}\n" {
+		t.Fatalf("resposta inesperada: %s", response.Body.String())
+	}
+}
+
 func TestExtractRequiresAuthenticationAndStreamsNDJSON(t *testing.T) {
 	server := New("secret", 1<<20, 1, 1, fakeExtractor{text: "VIVO\nContrato: 123\nCNPJ 12.345.678/0001-90\nCompetência: 07/2026\n(65) 99999-2222 Plano R$ 10,00"}, invoice.NewRegistry(invoice.NewTelecomParser("VIVO", "VIVO")), slog.Default())
 	unauthorized := httptest.NewRecorder()
