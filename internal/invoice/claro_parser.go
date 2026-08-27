@@ -68,6 +68,10 @@ func (ClaroParser) Parse(text string) (Document, error) {
 	document := parseClaroHeader(preamble)
 	blocks := splitClaroLineBlocks(lines)
 	document.LineCount = len(blocks)
+	for _, item := range parseClaroAccountItems(preamble) {
+		item.Row = len(document.Items) + 1
+		document.Items = append(document.Items, item)
+	}
 
 	for _, block := range blocks {
 		services := parseClaroServices(block)
@@ -107,7 +111,23 @@ func (ClaroParser) ParseStream(reader io.Reader, chunkSize int, emit func(Stream
 		header = parseClaroHeader(preamble)
 		finalizeClaroMetadata(&header, false)
 		metadataEmitted = true
-		return emit(StreamChunk{Metadata: &header})
+		if err := emit(StreamChunk{Metadata: &header}); err != nil {
+			return err
+		}
+		accountItems := parseClaroAccountItems(preamble)
+		for index := range accountItems {
+			accountItems[index].Row = nextItemRow
+			nextItemRow++
+		}
+		for start := 0; start < len(accountItems); start += chunkSize {
+			end := min(start+chunkSize, len(accountItems))
+			if err := emit(StreamChunk{Items: accountItems[start:end]}); err != nil {
+				return err
+			}
+		}
+		stats.ItemCount += len(accountItems)
+
+		return nil
 	}
 	emitBlock := func(block *claroLineBlock) error {
 		if block == nil {
@@ -418,6 +438,41 @@ func parseClaroServices(block claroLineBlock) []Item {
 			Included: included, RawAmount: rawAmount, ParentServiceName: parent,
 		})
 	}
+	return items
+}
+
+func parseClaroAccountItems(lines []string) []Item {
+	inOtherCharges := false
+	items := make([]Item, 0, 4)
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(normalizeClaroLine(rawLine))
+		upper := strings.ToUpper(line)
+		switch {
+		case inOtherCharges && (strings.HasPrefix(upper, "SUBTOTAL") || strings.HasPrefix(upper, "TOTAL")):
+			inOtherCharges = false
+			continue
+		case strings.Contains(upper, "OUTROS LANÇAMENTOS"), strings.Contains(upper, "OUTROS LANCAMENTOS"):
+			inOtherCharges = true
+			continue
+		}
+		if !inOtherCharges || line == "" || strings.Contains(upper, "VALOR R$") {
+			continue
+		}
+		match := claroServicePattern.FindStringSubmatch(line)
+		if len(match) != 3 || match[2] == "-" {
+			continue
+		}
+		name := strings.TrimSpace(match[1])
+		if name == "" {
+			continue
+		}
+		items = append(items, Item{
+			ServiceName: name, Quantity: 1, Unit: "UN",
+			AmountCents: moneyCents(match[2]), RawAmount: match[2], Confidence: .96,
+			AdditionalInformation: "NON_RECURRING_ACCOUNT_CHARGE",
+		})
+	}
+
 	return items
 }
 

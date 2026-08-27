@@ -83,6 +83,50 @@ TOTAL                                                                        R$ 
 	}
 }
 
+func TestClaroParserIncludesAccountLevelOtherCharges(t *testing.T) {
+	text := `EMPRESA TESTE
+Nº da conta: 194015851 17/07/2026
+CPF/CNPJ 42.520.181/0001-27
+Razão Social: Claro S/A
+Período de uso de 21/05/2026 a 20/06/2026
+Total a pagar R$ 88,31
+2. OUTROS LANÇAMENTOS VALOR R$
+Multa 0,02
+SUBTOTAL - OUTROS LANÇAMENTOS R$ 0,02
+SERVIÇOS CONTRATADOS E UTILIZADOS Contratado Utilizado Excedente VALOR R$
+VOZ Ilimitado 162min06s - 0,00
+DETALHAMENTO DE LIGAÇÕES E SERVIÇOS DO CELULAR (65) 99936 0517
+Mensalidades e Pacotes Promocionais
+Descrição Total (R$)
+Oferta Conjunta Claro MIX 88,29
+TOTAL R$ 88,29`
+
+	document, err := NewClaroParser().Parse(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Items) != 2 || document.Items[0].ServiceName != "Multa" ||
+		document.Items[0].PhoneNumber != "" || document.Items[0].AmountCents != 2 ||
+		document.Items[0].AdditionalInformation != "NON_RECURRING_ACCOUNT_CHARGE" {
+		t.Fatalf("lançamento fora da linha não identificado: %#v", document.Items)
+	}
+	if total := document.Items[0].AmountCents + document.Items[1].AmountCents; total != document.TotalAmountCents.Value {
+		t.Fatalf("itens não reconciliam com o total: items=%d total=%d", total, document.TotalAmountCents.Value)
+	}
+
+	streamItems := make([]Item, 0, 2)
+	stats, err := NewClaroParser().ParseStream(strings.NewReader(text), 1, func(chunk StreamChunk) error {
+		streamItems = append(streamItems, chunk.Items...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ItemCount != 2 || len(streamItems) != 2 || streamItems[0].ServiceName != "Multa" {
+		t.Fatalf("stream não preservou lançamentos fora da linha: stats=%#v items=%#v", stats, streamItems)
+	}
+}
+
 func TestClaroParserRealFixturesWhenAvailable(t *testing.T) {
 	fixtures := []struct {
 		name            string
