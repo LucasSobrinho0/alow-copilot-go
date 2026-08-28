@@ -127,6 +127,58 @@ TOTAL R$ 88,29`
 	}
 }
 
+func TestClaroParserIncludesAdditionalItemsOnceAndReconcilesInvoice(t *testing.T) {
+	text := `JORGE LUIZ CAMPOS
+Nº da conta: 132544238 17/08/2026
+CPF/CNPJ 08.861.901/0001-80
+Razão Social: Claro S/A
+Período de uso de 21/06/2026 a 20/07/2026
+1. Plano Contratado R$ 183,41
+2. Itens Adicionais R$ 42,00
+Total a pagar R$ 225,41
+SUBTOTAL - PLANO CONTRATADO R$ 183,41
+2. ITENS ADICIONAIS VALOR R$
+Multa por Quebra de Contrato 42,00
+SUBTOTAL - ITENS ADICIONAIS R$ 42,00
+DETALHAMENTO DE LIGAÇÕES E SERVIÇOS DO CELULAR (65) 99999 1111
+Mensalidades e Pacotes Promocionais
+Descrição Total (R$)
+Oferta Conjunta Claro MIX 183,41
+TOTAL R$ 183,41`
+
+	document, err := NewClaroParser().Parse(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Items) != 2 {
+		t.Fatalf("esperava multa e plano uma única vez, recebeu %#v", document.Items)
+	}
+	if item := document.Items[0]; item.ServiceName != "Multa por Quebra de Contrato" ||
+		item.AmountCents != 4200 || item.PhoneNumber != "" ||
+		item.AdditionalInformation != "NON_RECURRING_ACCOUNT_CHARGE" {
+		t.Fatalf("item adicional incorreto: %#v", item)
+	}
+	itemTotal := int64(0)
+	for _, item := range document.Items {
+		itemTotal += item.AmountCents
+	}
+	if itemTotal != document.TotalAmountCents.Value || itemTotal != 22541 {
+		t.Fatalf("itens não reconciliam com a fatura: items=%d invoice=%d", itemTotal, document.TotalAmountCents.Value)
+	}
+
+	streamItems := make([]Item, 0, 2)
+	stats, err := NewClaroParser().ParseStream(strings.NewReader(text), 1, func(chunk StreamChunk) error {
+		streamItems = append(streamItems, chunk.Items...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ItemCount != 2 || len(streamItems) != 2 || streamItems[0].AmountCents != 4200 {
+		t.Fatalf("stream não preservou item adicional único: stats=%#v items=%#v", stats, streamItems)
+	}
+}
+
 func TestClaroParserRealFixturesWhenAvailable(t *testing.T) {
 	fixtures := []struct {
 		name            string

@@ -451,7 +451,7 @@ func parseClaroAccountItems(lines []string) []Item {
 		case inOtherCharges && (strings.HasPrefix(upper, "SUBTOTAL") || strings.HasPrefix(upper, "TOTAL")):
 			inOtherCharges = false
 			continue
-		case strings.Contains(upper, "OUTROS LANÇAMENTOS"), strings.Contains(upper, "OUTROS LANCAMENTOS"):
+		case isClaroAccountItemsSection(line, upper):
 			inOtherCharges = true
 			continue
 		}
@@ -474,6 +474,19 @@ func parseClaroAccountItems(lines []string) []Item {
 	}
 
 	return items
+}
+
+func isClaroAccountItemsSection(line, upper string) bool {
+	if strings.Contains(upper, "OUTROS LANÇAMENTOS") || strings.Contains(upper, "OUTROS LANCAMENTOS") {
+		return true
+	}
+	if !strings.Contains(upper, "ITENS ADICIONAIS") {
+		return false
+	}
+
+	// A capa também contém "Itens adicionais", mas acompanhada do subtotal.
+	// O cabeçalho da seção analítica usa "VALOR R$" ou não possui valor monetário.
+	return strings.Contains(upper, "VALOR R$") || len(claroMoneyToken.FindAllString(line, -1)) == 0
 }
 
 func parseClaroUsage(block claroLineBlock, referenceStart, referenceEnd string) []UsageRecord {
