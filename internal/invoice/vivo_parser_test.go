@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestVivoParserExtractsHeaderLinesAndAccountAdjustments(t *testing.T) {
+func TestVivoParserExtractsHeaderLinesAndAccountItems(t *testing.T) {
 	text := `Nº da Conta: 0421466285
 Mês de referência: 05/2026
 Período: 06/04/2026 a 05/05/2026
@@ -18,7 +18,7 @@ AGUAS DO RIO 1 SPE SA                                                         CP
 Vencimento
 28/05/2026
 Total a Pagar - R$
-130,00
+125,00
 Outros Lançamentos
 Parcelamento (Ex.: Conta; Aparelho e Outros)                                  100,00
 846800006047 413000480017 104214662850 052622605286
@@ -42,7 +42,7 @@ Total Números Vivo: 2`
 		document.ReferenceEnd.Value != "2026-05-05" || document.DueDate.Value != "2026-05-28" {
 		t.Fatalf("datas incorretas: %#v", document)
 	}
-	if document.TotalAmountCents.Value != 13000 || document.LineCount != 2 || len(document.Barcode.Value) != 48 {
+	if document.TotalAmountCents.Value != 12500 || document.LineCount != 2 || len(document.Barcode.Value) != 48 {
 		t.Fatalf("totais incorretos: %#v", document)
 	}
 	if sumVivoItems(document.Items) != document.TotalAmountCents.Value {
@@ -50,6 +50,64 @@ Total Números Vivo: 2`
 	}
 	if document.Items[0].PhoneNumber != "5521996776236" || document.Items[1].PhoneNumber != "5521997710761" {
 		t.Fatalf("linhas incorretas: %#v", document.Items)
+	}
+}
+
+func TestVivoParserRejectsUnreconciledValuesInsteadOfCreatingSyntheticAdjustment(t *testing.T) {
+	text := `Nº da Conta: 0421466285
+Mês de referência: 05/2026
+Período: 06/04/2026 a 05/05/2026
+Telefonica Brasil S.A.
+AGUAS DO RIO 1 SPE SA  CPF/CNPJ: 42.310.775/0001-03
+Vencimento
+28/05/2026
+Total a Pagar - R$
+130,00
+Outros Lançamentos
+Parcelamento 100,00
+DETALHAMENTO TOTAL DA CONTA
+VEJA OS NÚMEROS VIVO E PLANOS QUE COMPÕEM A SUA CONTA
+Número Vivo Plano Valor Total R$
+21-99677-6236 SMART EMPRESAS 6GB TE 15,00 21-99771-0761 PLANO BASE INTERNET PJ 10,00
+Total Números Vivo: 2`
+
+	_, err := NewVivoParser().Parse(text)
+	if err == nil || !strings.Contains(err.Error(), "não conciliam com o total") {
+		t.Fatalf("era esperada divergência explícita, recebido: %v", err)
+	}
+}
+
+func TestVivoParserRejectsSefazURLAsCustomerAndFiscalSummaryAsServices(t *testing.T) {
+	text := `Telefonica Brasil S.A.
+Nº da Conta: 0370143814
+Mês de referência: 02/2026
+Período: 06/01/2026 a 05/02/2026
+Nome do Cliente                                      Vencimento Total a Pagar - R$
+GUAXE CONSTRUTORA LTDA                               17/03/2026 100,00
+SERVIÇOS TELEFÔNICA BRASIL 02.558.157/0135-74
+VALOR TOTAL NF 100,00
+BASE DE CÁLCULO 80,00
+VALOR ICMS 13,60
+NOME: GUAXE CONSTRUTORA LTDA
+https://www.sefaz.mt.gov.br/nfcom-ext-fe/qrcode?chNFCom
+CPF/CNPJ: 02.837.996/0001-10
+VEJA OS NÚMEROS VIVO E PLANOS QUE COMPÕEM A SUA CONTA
+Número Vivo Plano Valor Total R$
+65-99999-0000 SMART EMPRESAS 100,00
+Total Números Vivo: 1`
+
+	document, err := NewVivoParser().Parse(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.CustomerName.Value != "GUAXE CONSTRUTORA LTDA" {
+		t.Fatalf("cliente incorreto: %q", document.CustomerName.Value)
+	}
+	for _, item := range document.Items {
+		upper := strings.ToUpper(item.ServiceName)
+		if strings.HasPrefix(upper, "VALOR TOTAL NF") || strings.HasPrefix(upper, "BASE DE CÁLCULO") || strings.HasPrefix(upper, "VALOR ICMS") {
+			t.Fatalf("metadado fiscal foi importado como serviço: %#v", item)
+		}
 	}
 }
 

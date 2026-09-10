@@ -31,6 +31,7 @@ var (
 	vivoMoneyToken        = regexp.MustCompile(`-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2}`)
 	vivoBarcodePattern    = regexp.MustCompile(`\b(\d{12})\s+(\d{12})\s+(\d{12})\s+(\d{12})\b`)
 	vivoColumns           = regexp.MustCompile(`\s{2,}`)
+	vivoAlphabetic        = regexp.MustCompile(`[[:alpha:]]`)
 )
 
 type VivoParser struct{}
@@ -168,17 +169,25 @@ func (VivoParser) ParseStream(reader io.Reader, chunkSize int, emit func(StreamC
 
 	accountItems := parseVivoAccountItems(preamble)
 	accountTotal := int64(0)
+	for _, item := range accountItems {
+		accountTotal += item.AmountCents
+	}
+	remaining := header.TotalAmountCents.Value - lineItemsTotal
+	if remaining == 0 {
+		// Algumas faturas repetem no cabeçalho um agregado que já está distribuído
+		// no resumo por linha. Nesse caso, emitir o agregado duplicaria a cobrança.
+		accountItems = nil
+		accountTotal = 0
+	}
+	if difference := remaining - accountTotal; difference != 0 {
+		return stats, fmt.Errorf(
+			"valores detalhados da fatura Vivo não conciliam com o total: diferença de %d centavos",
+			difference,
+		)
+	}
 	for index := range accountItems {
 		accountItems[index].Row = nextRow
 		nextRow++
-		accountTotal += accountItems[index].AmountCents
-	}
-	if difference := header.TotalAmountCents.Value - lineItemsTotal - accountTotal; difference != 0 {
-		accountItems = append(accountItems, Item{
-			Row: nextRow, ServiceName: "Ajuste da conta não detalhado por linha", Quantity: 1,
-			Unit: "UN", AmountCents: difference, Confidence: .65,
-			AdditionalInformation: "Diferença entre o total da conta e os valores detalhados por número Vivo.",
-		})
 	}
 	if err := emitItems(accountItems); err != nil {
 		return stats, err
@@ -217,23 +226,68 @@ func findVivoCustomer(lines []string) (Field[string], Field[string]) {
 		line := strings.ReplaceAll(rawLine, "\f", "")
 		if match := vivoCustomerPattern.FindStringSubmatch(line); len(match) == 3 {
 			name := strings.TrimSpace(match[1])
-			if name != "" {
+			if isVivoCustomerName(name) {
 				return Field[string]{Value: name, Confidence: .99}, Field[string]{Value: digits(match[2]), Confidence: .99}
+			}
+		}
+	}
+	// O quadro principal da conta traz o cliente de forma mais estável do que o
+	// bloco fiscal. Algumas NFCOM posicionam uma URL da SEFAZ imediatamente antes
+	// do CPF/CNPJ, portanto o nome não pode ser inferido apenas pela proximidade.
+	for index, rawLine := range lines {
+		if !strings.Contains(strings.ToUpper(normalizeVivoLine(rawLine)), "NOME DO CLIENTE") {
+			continue
+		}
+		for next := index + 1; next < len(lines) && next <= index+4; next++ {
+			columns := vivoColumns.Split(strings.TrimSpace(strings.ReplaceAll(lines[next], "\f", "")), -1)
+			if len(columns) > 0 && isVivoCustomerName(columns[0]) {
+				if document := findVivoCustomerDocument(lines); document != "" {
+					return Field[string]{Value: strings.TrimSpace(columns[0]), Confidence: .98}, Field[string]{Value: document, Confidence: .99}
+				}
 			}
 		}
 	}
 	// Algumas versões quebram o nome e o CPF/CNPJ em linhas diferentes.
 	for index, rawLine := range lines {
 		if match := vivoCustomerDocumentPattern.FindStringSubmatch(rawLine); len(match) == 2 {
-			for previous := index - 1; previous >= 0 && previous >= index-3; previous-- {
+			for previous := index - 1; previous >= 0 && previous >= index-8; previous-- {
 				name := strings.TrimSpace(strings.ReplaceAll(lines[previous], "\f", ""))
-				if name != "" && !strings.Contains(strings.ToUpper(name), "TELEFÔNICA BRASIL") {
-					return Field[string]{Value: name, Confidence: .82}, Field[string]{Value: digits(match[1]), Confidence: .99}
+				columns := vivoColumns.Split(name, -1)
+				if len(columns) > 0 && isVivoCustomerName(columns[0]) {
+					return Field[string]{Value: strings.TrimSpace(columns[0]), Confidence: .82}, Field[string]{Value: digits(match[1]), Confidence: .99}
 				}
 			}
 		}
 	}
 	return Field[string]{}, Field[string]{}
+}
+
+func findVivoCustomerDocument(lines []string) string {
+	for _, rawLine := range lines {
+		if match := vivoCustomerDocumentPattern.FindStringSubmatch(rawLine); len(match) == 2 {
+			return digits(match[1])
+		}
+	}
+	return ""
+}
+
+func isVivoCustomerName(value string) bool {
+	name := strings.TrimSpace(value)
+	upper := strings.ToUpper(name)
+	if name == "" || !vivoAlphabetic.MatchString(name) {
+		return false
+	}
+	invalidFragments := []string{
+		"HTTP://", "HTTPS://", "WWW.", "SEFAZ", "QRCODE", "CHNFCOM",
+		"TELEFÔNICA BRASIL", "TELEFONICA BRASIL", "CPF/CNPJ", "CHAVE DE ACESSO",
+		"CONSULTE PELA", "PROTOCOLO DE AUTORIZAÇÃO", "PROTOCOLO DE AUTORIZACAO",
+	}
+	for _, fragment := range invalidFragments {
+		if strings.Contains(upper, fragment) {
+			return false
+		}
+	}
+	return true
 }
 
 func findVivoLabeledDate(lines []string, label *regexp.Regexp) string {
@@ -314,7 +368,10 @@ func parseVivoAccountItems(lines []string) []Item {
 			strings.HasPrefix(upper, "OUTROS LANÇAMENTOS"):
 			section = sectionAdditional
 			continue
-		case strings.HasPrefix(upper, "MENSAGEM IMPORTANTE"), vivoSummaryStart.MatchString(line):
+		case strings.HasPrefix(upper, "MENSAGEM IMPORTANTE"),
+			strings.HasPrefix(upper, "DETALHAMENTO TOTAL DA CONTA"),
+			vivoSummaryStart.MatchString(line),
+			isVivoFiscalSummary(upper):
 			section = sectionIgnored
 		}
 		if section != sectionAdditional || strings.HasPrefix(upper, "SUBTOTAL") || strings.HasPrefix(upper, "TOTAL") {
@@ -341,6 +398,20 @@ func parseVivoAccountItems(lines []string) []Item {
 		})
 	}
 	return items
+}
+
+func isVivoFiscalSummary(upper string) bool {
+	labels := []string{
+		"VALOR TOTAL NF", "BASE DE CÁLCULO", "BASE DE CALCULO", "VALOR ICMS", "VALOR FCP",
+		"VALOR PIS", "VALOR COFINS", "ALÍQUOTA", "ALIQUOTA", "INFORMAÇÕES DOS TRIBUTOS",
+		"INFORMACOES DOS TRIBUTOS", "RESERVADO AO FISCO", "CHAVE DE ACESSO", "Nº NFCOM",
+	}
+	for _, label := range labels {
+		if strings.HasPrefix(upper, label) {
+			return true
+		}
+	}
+	return false
 }
 
 func finalizeVivoMetadata(document *Document, validateLines bool) {
